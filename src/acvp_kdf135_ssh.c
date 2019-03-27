@@ -30,6 +30,7 @@
 #include "acvp.h"
 #include "acvp_lcl.h"
 #include "parson.h"
+#include "safe_lib.h"
 
 /*
  * Forward prototypes for local functions
@@ -50,7 +51,6 @@ static ACVP_RESULT acvp_kdf135_ssh_init_tc(ACVP_CTX *ctx,
                                            const char *session_id);
 
 static ACVP_RESULT acvp_kdf135_ssh_release_tc(ACVP_KDF135_SSH_TC *stc);
-
 
 ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
     unsigned int tc_id;
@@ -79,10 +79,6 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
     ACVP_RESULT rv;
 
     ACVP_CIPHER alg_id;
-    unsigned int e_key_len;
-    unsigned int i_key_len;
-    unsigned int iv_len;
-    unsigned int hash_len;
     const char *alg_str = NULL;
     const char *mode_str = NULL;
     const char *cipher_str = NULL;
@@ -107,15 +103,16 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
         return ACVP_MALFORMED_JSON;
     }
 
-    if (strncmp(alg_str, "kdf-components", 14)) {
-        ACVP_LOG_ERR("Invalid algorithm for this function %s", alg_str);
-        return ACVP_INVALID_ARG;
-    }
-
     mode_str = json_object_get_string(obj, "mode");
     if (!mode_str) {
         ACVP_LOG_ERR("unable to parse 'mode' from JSON");
         return ACVP_MALFORMED_JSON;
+    }
+
+    alg_id = acvp_lookup_cipher_w_mode_index(alg_str, mode_str);
+    if (alg_id != ACVP_KDF135_SSH) {
+        ACVP_LOG_ERR("Server JSON invalid 'algorithm' or 'mode'");
+        return ACVP_INVALID_ARG;
     }
 
     /*
@@ -126,7 +123,6 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
     /*
      * Get the crypto module handler for this hash algorithm
      */
-    alg_id = ACVP_KDF135_SSH;
     cap = acvp_locate_cap_entry(ctx, alg_id);
     if (!cap) {
         ACVP_LOG_ERR("ACVP server requesting unsupported capability %s : %d.", alg_str, alg_id);
@@ -154,12 +150,16 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
     groups = json_object_get_array(obj, "testGroups");
     if (!groups) {
         ACVP_LOG_ERR("Failed to include testGroups. ");
-        return ACVP_MISSING_ARG;
+        rv = ACVP_MISSING_ARG;
+        goto err;
     }
 
     g_cnt = json_array_get_count(groups);
     for (i = 0; i < g_cnt; i++) {
         int tgId = 0;
+        int diff = 1;
+        unsigned int e_key_len = 0, i_key_len = 0,
+                     hash_len = 0, iv_len = 0;
         ACVP_HASH_ALG sha_type = 0;
         const char *sha_str = NULL;
         groupval = json_array_get_value(groups, i);
@@ -174,7 +174,8 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
         tgId = json_object_get_number(groupobj, "tgId");
         if (!tgId) {
             ACVP_LOG_ERR("Missing tgid from server JSON groub obj");
-            return ACVP_MALFORMED_JSON;
+            rv = ACVP_MALFORMED_JSON;
+            goto err;
         }
         json_object_set_number(r_gobj, "tgId", tgId);
         json_object_set_value(r_gobj, "tests", json_value_init_array());
@@ -184,58 +185,67 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
         cipher_str = json_object_get_string(groupobj, "cipher");
         if (!cipher_str) {
             ACVP_LOG_ERR("Failed to include cipher. ");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
         }
 
         sha_str = json_object_get_string(groupobj, "hashAlg");
         if (!sha_str) {
             ACVP_LOG_ERR("Failed to include hashAlg. ");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
+        }
+
+        sha_type = acvp_lookup_hash_alg(sha_str);
+        if (sha_type == ACVP_SHA1) {
+            i_key_len = hash_len = ACVP_SHA1_BYTE_LEN;
+        } else if (sha_type == ACVP_SHA224) {
+            i_key_len = hash_len = ACVP_SHA224_BYTE_LEN;
+        } else if (sha_type == ACVP_SHA256) {
+            i_key_len = hash_len = ACVP_SHA256_BYTE_LEN;
+        } else if (sha_type == ACVP_SHA384) {
+            i_key_len = hash_len = ACVP_SHA384_BYTE_LEN;
+        } else if (sha_type == ACVP_SHA512) {
+            i_key_len = hash_len = ACVP_SHA512_BYTE_LEN;
+        } else {
+            ACVP_LOG_ERR("ACVP server requesting invalid hashAlg");
+            rv = ACVP_NO_CAP;
+            goto err;
         }
 
         /*
          * Determine the encrypt key_len, inferred from cipher.
          */
-        if (!strncmp(cipher_str, ACVP_MODE_TDES, 4)) {
+        strcmp_s(ACVP_MODE_TDES, 4, cipher_str, &diff);
+        if (!diff) {
             e_key_len = ACVP_KEY_LEN_TDES;
             iv_len = ACVP_BLOCK_LEN_TDES;
-        } else if (!strncmp(cipher_str, ACVP_MODE_AES_128, 7)) {
-            e_key_len = ACVP_KEY_LEN_AES128;
-            iv_len = ACVP_BLOCK_LEN_AES128;
-        } else if (!strncmp(cipher_str, ACVP_MODE_AES_192, 7)) {
-            e_key_len = ACVP_KEY_LEN_AES192;
-            iv_len = ACVP_BLOCK_LEN_AES192;
-        } else if (!strncmp(cipher_str, ACVP_MODE_AES_256, 7)) {
-            e_key_len = ACVP_KEY_LEN_AES256;
-            iv_len = ACVP_BLOCK_LEN_AES256;
-        } else {
-            ACVP_LOG_ERR("Unsupported cipher type");
-            return ACVP_NO_CAP;
         }
 
-        /*
-         * Determine the sha mode to operate.
-         * Also infer the hash_len and integrity key_len.
-         */
-        if (!strncmp(sha_str, "SHA-1", 5)) {
-            sha_type = ACVP_SHA1;
-            i_key_len = hash_len = ACVP_SHA1_BYTE_LEN;
-        } else if (!strncmp(sha_str, "SHA2-224", 8)) {
-            sha_type = ACVP_SHA224;
-            i_key_len = hash_len = ACVP_SHA224_BYTE_LEN;
-        } else if (!strncmp(sha_str, "SHA2-256", 8)) {
-            sha_type = ACVP_SHA256;
-            i_key_len = hash_len = ACVP_SHA256_BYTE_LEN;
-        } else if (!strncmp(sha_str, "SHA2-384", 8)) {
-            sha_type = ACVP_SHA384;
-            i_key_len = hash_len = ACVP_SHA384_BYTE_LEN;
-        } else if (!strncmp(sha_str, "SHA2-512", 8)) {
-            sha_type = ACVP_SHA512;
-            i_key_len = hash_len = ACVP_SHA512_BYTE_LEN;
-        } else {
-            ACVP_LOG_ERR("Unsupported sha type");
-            return ACVP_NO_CAP;
+        strcmp_s(ACVP_MODE_AES_128, 7, cipher_str, &diff);
+        if (!diff) {
+            e_key_len = ACVP_KEY_LEN_AES128;
+            iv_len = ACVP_BLOCK_LEN_AES128;
         }
+
+        strcmp_s(ACVP_MODE_AES_192, 7, cipher_str, &diff);
+        if (!diff) {
+            e_key_len = ACVP_KEY_LEN_AES192;
+            iv_len = ACVP_BLOCK_LEN_AES192;
+        }
+
+        strcmp_s(ACVP_MODE_AES_256, 7, cipher_str, &diff);
+        if (!diff) {
+            e_key_len = ACVP_KEY_LEN_AES256;
+            iv_len = ACVP_BLOCK_LEN_AES256;
+        }
+
+        if (!e_key_len || !iv_len) {
+            ACVP_LOG_ERR("Unsupported cipher type");
+            rv = ACVP_NO_CAP;
+            goto err;
+        }
+
 
         /*
          * Log Test Group information...
@@ -247,13 +257,15 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
         tests = json_object_get_array(groupobj, "tests");
         if (!tests) {
             ACVP_LOG_ERR("Failed to include tests. ");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
         }
 
         t_cnt = json_array_get_count(tests);
         if (!t_cnt) {
             ACVP_LOG_ERR("Failed to include tests in array. ");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
         }
 
         for (j = 0; j < t_cnt; j++) {
@@ -264,25 +276,29 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
             tc_id = (unsigned int)json_object_get_number(testobj, "tcId");
             if (!tc_id) {
                 ACVP_LOG_ERR("Failed to include tc_id. ");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
             shared_secret_str = json_object_get_string(testobj, "k");
             if (!shared_secret_str) {
                 ACVP_LOG_ERR("Failed to include k. ");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
             hash_str = json_object_get_string(testobj, "h");
             if (!hash_str) {
                 ACVP_LOG_ERR("Failed to include h. ");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
             session_id_str = json_object_get_string(testobj, "sessionId");
             if (!session_id_str) {
                 ACVP_LOG_ERR("Failed to include sessionId. ");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
             ACVP_LOG_INFO("        Test case: %d", j);
@@ -308,14 +324,15 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
                                          shared_secret_str, hash_str, session_id_str);
             if (rv != ACVP_SUCCESS) {
                 acvp_kdf135_ssh_release_tc(&stc);
-                return rv;
+                goto err;
             }
 
             /* Process the current test vector... */
             if ((cap->crypto_handler)(&tc)) {
                 ACVP_LOG_ERR("crypto module failed the KDF SSH operation");
                 acvp_kdf135_ssh_release_tc(&stc);
-                return ACVP_CRYPTO_MODULE_FAIL;
+                rv = ACVP_CRYPTO_MODULE_FAIL;
+                goto err;
             }
 
             /*
@@ -325,7 +342,7 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
             if (rv != ACVP_SUCCESS) {
                 ACVP_LOG_ERR("JSON output failure in hash module");
                 acvp_kdf135_ssh_release_tc(&stc);
-                return rv;
+                goto err;
             }
             /*
              * Release all the memory associated with the test case
@@ -340,15 +357,20 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
 
     json_array_append_value(reg_arry, r_vs_val);
 
-    json_result = json_serialize_to_string_pretty(ctx->kat_resp);
+    json_result = json_serialize_to_string_pretty(ctx->kat_resp, NULL);
     if (ctx->debug == ACVP_LOG_LVL_VERBOSE) {
         printf("\n\n%s\n\n", json_result);
     } else {
         ACVP_LOG_INFO("\n\n%s\n\n", json_result);
     }
     json_free_serialized_string(json_result);
+    rv = ACVP_SUCCESS;
 
-    return ACVP_SUCCESS;
+err:
+    if (rv != ACVP_SUCCESS) {
+        acvp_release_json(r_vs_val, r_gval);
+    }
+    return rv;
 }
 
 /*
@@ -385,7 +407,7 @@ static ACVP_RESULT acvp_kdf135_ssh_output_tc(ACVP_CTX *ctx,
         goto err;
     }
     json_object_set_string(tc_rsp, "initialIvClient", tmp);
-    memset(tmp, 0, ACVP_KDF135_SSH_STR_OUT_MAX);
+    memzero_s(tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
 
     rv = acvp_bin_to_hexstr(stc->cs_encrypt_key, stc->e_key_len, tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
     if (rv != ACVP_SUCCESS) {
@@ -393,7 +415,7 @@ static ACVP_RESULT acvp_kdf135_ssh_output_tc(ACVP_CTX *ctx,
         goto err;
     }
     json_object_set_string(tc_rsp, "encryptionKeyClient", tmp);
-    memset(tmp, 0, ACVP_KDF135_SSH_STR_OUT_MAX);
+    memzero_s(tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
 
     rv = acvp_bin_to_hexstr(stc->cs_integrity_key, stc->i_key_len, tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
     if (rv != ACVP_SUCCESS) {
@@ -401,7 +423,7 @@ static ACVP_RESULT acvp_kdf135_ssh_output_tc(ACVP_CTX *ctx,
         goto err;
     }
     json_object_set_string(tc_rsp, "integrityKeyClient", tmp);
-    memset(tmp, 0, ACVP_KDF135_SSH_STR_OUT_MAX);
+    memzero_s(tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
 
     rv = acvp_bin_to_hexstr(stc->sc_init_iv, stc->iv_len, tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
     if (rv != ACVP_SUCCESS) {
@@ -409,7 +431,7 @@ static ACVP_RESULT acvp_kdf135_ssh_output_tc(ACVP_CTX *ctx,
         goto err;
     }
     json_object_set_string(tc_rsp, "initialIvServer", tmp);
-    memset(tmp, 0, ACVP_KDF135_SSH_STR_OUT_MAX);
+    memzero_s(tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
 
     rv = acvp_bin_to_hexstr(stc->sc_encrypt_key, stc->e_key_len, tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
     if (rv != ACVP_SUCCESS) {
@@ -417,7 +439,7 @@ static ACVP_RESULT acvp_kdf135_ssh_output_tc(ACVP_CTX *ctx,
         goto err;
     }
     json_object_set_string(tc_rsp, "encryptionKeyServer", tmp);
-    memset(tmp, 0, ACVP_KDF135_SSH_STR_OUT_MAX);
+    memzero_s(tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
 
     rv = acvp_bin_to_hexstr(stc->sc_integrity_key, stc->i_key_len, tmp, ACVP_KDF135_SSH_STR_OUT_MAX);
     if (rv != ACVP_SUCCESS) {
@@ -447,11 +469,11 @@ static ACVP_RESULT acvp_kdf135_ssh_init_tc(ACVP_CTX *ctx,
     unsigned int session_id_len = 0;
     ACVP_RESULT rv;
 
-    memset(stc, 0x0, sizeof(ACVP_KDF135_SSH_TC));
+    memzero_s(stc, sizeof(ACVP_KDF135_SSH_TC));
 
     // Get the byte lengths
-    shared_secret_len = strnlen(shared_secret_k, ACVP_KDF135_SSH_STR_IN_MAX) / 2;
-    session_id_len = strnlen(session_id, ACVP_KDF135_SSH_STR_IN_MAX) / 2;
+    shared_secret_len = strnlen_s(shared_secret_k, ACVP_KDF135_SSH_STR_IN_MAX) / 2;
+    session_id_len = strnlen_s(session_id, ACVP_KDF135_SSH_STR_IN_MAX) / 2;
 
     stc->shared_secret_k = calloc(shared_secret_len, sizeof(unsigned char));
     if (!stc->shared_secret_k) { return ACVP_MALLOC_FAIL; }
@@ -515,7 +537,7 @@ static ACVP_RESULT acvp_kdf135_ssh_release_tc(ACVP_KDF135_SSH_TC *stc) {
     if (stc->cs_integrity_key) free(stc->cs_integrity_key);
     if (stc->sc_integrity_key) free(stc->sc_integrity_key);
 
-    memset(stc, 0, sizeof(ACVP_KDF135_SSH_TC));
+    memzero_s(stc, sizeof(ACVP_KDF135_SSH_TC));
 
     return ACVP_SUCCESS;
 }

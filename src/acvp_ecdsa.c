@@ -31,6 +31,7 @@
 #include "acvp.h"
 #include "acvp_lcl.h"
 #include "parson.h"
+#include "safe_lib.h"
 
 static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *obj, ACVP_CIPHER cipher);
 
@@ -54,7 +55,7 @@ static ACVP_RESULT acvp_ecdsa_output_tc(ACVP_CTX *ctx, ACVP_CIPHER cipher, ACVP_
             goto err;
         }
         json_object_set_string(tc_rsp, "qy", (const char *)tmp);
-        memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+        memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
 
         rv = acvp_bin_to_hexstr(stc->qx, stc->qx_len, tmp, ACVP_ECDSA_EXP_LEN_MAX);
         if (rv != ACVP_SUCCESS) {
@@ -62,7 +63,7 @@ static ACVP_RESULT acvp_ecdsa_output_tc(ACVP_CTX *ctx, ACVP_CIPHER cipher, ACVP_
             goto err;
         }
         json_object_set_string(tc_rsp, "qx", (const char *)tmp);
-        memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+        memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
 
         rv = acvp_bin_to_hexstr(stc->d, stc->d_len, tmp, ACVP_ECDSA_EXP_LEN_MAX);
         if (rv != ACVP_SUCCESS) {
@@ -70,7 +71,7 @@ static ACVP_RESULT acvp_ecdsa_output_tc(ACVP_CTX *ctx, ACVP_CIPHER cipher, ACVP_
             goto err;
         }
         json_object_set_string(tc_rsp, "d", (const char *)tmp);
-        memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+        memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
     }
     if (cipher == ACVP_ECDSA_KEYVER || cipher == ACVP_ECDSA_SIGVER) {
         json_object_set_boolean(tc_rsp, "testPassed", stc->ver_disposition);
@@ -82,7 +83,7 @@ static ACVP_RESULT acvp_ecdsa_output_tc(ACVP_CTX *ctx, ACVP_CIPHER cipher, ACVP_
             goto err;
         }
         json_object_set_string(tc_rsp, "r", (const char *)tmp);
-        memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+        memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
 
         rv = acvp_bin_to_hexstr(stc->s, stc->s_len, tmp, ACVP_ECDSA_EXP_LEN_MAX);
         if (rv != ACVP_SUCCESS) {
@@ -90,7 +91,7 @@ static ACVP_RESULT acvp_ecdsa_output_tc(ACVP_CTX *ctx, ACVP_CIPHER cipher, ACVP_
             goto err;
         }
         json_object_set_string(tc_rsp, "s", (const char *)tmp);
-        memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+        memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
     }
 
 err:
@@ -110,6 +111,7 @@ static ACVP_RESULT acvp_ecdsa_release_tc(ACVP_ECDSA_TC *stc) {
     if (stc->r) { free(stc->r); }
     if (stc->s) { free(stc->s); }
     if (stc->message) { free(stc->message); }
+    memzero_s(stc, sizeof(ACVP_ECDSA_TC));
 
     return ACVP_SUCCESS;
 }
@@ -129,7 +131,7 @@ static ACVP_RESULT acvp_ecdsa_init_tc(ACVP_CTX *ctx,
                                       char *s) {
     ACVP_RESULT rv = ACVP_SUCCESS;
 
-    memset(stc, 0x0, sizeof(ACVP_ECDSA_TC));
+    memzero_s(stc, sizeof(ACVP_ECDSA_TC));
 
     stc->tc_id = tc_id;
     stc->tg_id = tg_id;
@@ -220,6 +222,22 @@ ACVP_RESULT acvp_ecdsa_sigver_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
     return acvp_ecdsa_kat_handler_internal(ctx, obj, ACVP_ECDSA_SIGVER);
 }
 
+static ACVP_ECDSA_SECRET_GEN_MODE read_secret_gen_mode(const char *str) {
+    int diff = 1;
+
+    strcmp_s(ACVP_ECDSA_EXTRA_BITS_STR,
+             ACVP_ECDSA_EXTRA_BITS_STR_LEN,
+             str, &diff);
+    if (!diff) return ACVP_ECDSA_SECRET_GEN_EXTRA_BITS;
+
+    strcmp_s(ACVP_ECDSA_TESTING_CANDIDATES_STR,
+             ACVP_ECDSA_TESTING_CANDIDATES_STR_LEN,
+             str, &diff);
+    if (!diff) return ACVP_ECDSA_SECRET_GEN_TEST_CAND;
+
+    return 0;
+}
+
 static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *obj, ACVP_CIPHER cipher) {
     unsigned int tc_id;
     JSON_Value *groupval;
@@ -260,26 +278,20 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
         ACVP_LOG_ERR("ERROR: unable to parse 'algorithm' from JSON");
         return ACVP_MALFORMED_JSON;
     }
-    if (strncmp(alg_str, ACVP_ALG_ECDSA, strlen(ACVP_ALG_ECDSA))) {
-        ACVP_LOG_ERR("Invalid algorithm string in JSON");
-        return ACVP_INVALID_ARG;
-    }
 
+    memzero_s(&stc, sizeof(ACVP_ECDSA_TC));
     tc.tc.ecdsa = &stc;
     mode_str = (char *)json_object_get_string(obj, "mode");
     if (!mode_str) {
         ACVP_LOG_ERR("Server JSON missing 'mode_str'");
         return ACVP_MALFORMED_JSON;
     }
-    if (strncmp(mode_str, ACVP_MODE_KEYGEN, strlen(ACVP_MODE_KEYGEN)) &&
-        strncmp(mode_str, ACVP_MODE_KEYVER, strlen(ACVP_MODE_KEYVER)) &&
-        strncmp(mode_str, ACVP_MODE_SIGGEN, strlen(ACVP_MODE_SIGGEN)) &&
-        strncmp(mode_str, ACVP_MODE_SIGVER, strlen(ACVP_MODE_SIGVER))) {
-        ACVP_LOG_ERR("Server JSON includes unrecognized mode");
+
+    alg_id = acvp_lookup_cipher_w_mode_index(alg_str, mode_str);
+    if (alg_id != cipher) {
+        ACVP_LOG_ERR("Server JSON invalid algorithm or mode");
         return ACVP_INVALID_ARG;
     }
-
-    alg_id = cipher;
 
     cap = acvp_locate_cap_entry(ctx, alg_id);
     if (!cap) {
@@ -310,7 +322,8 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
     groups = json_object_get_array(obj, "testGroups");
     if (!groups) {
         ACVP_LOG_ERR("Missing testGroups from server JSON");
-        return ACVP_MALFORMED_JSON;
+        rv = ACVP_MALFORMED_JSON;
+        goto err;
     }
     g_cnt = json_array_get_count(groups);
 
@@ -334,7 +347,8 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
         tgId = json_object_get_number(groupobj, "tgId");
         if (!tgId) {
             ACVP_LOG_ERR("Missing tgid from server JSON groub obj");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
         }
         json_object_set_number(r_gobj, "tgId", tgId);
         json_object_set_value(r_gobj, "tests", json_value_init_array());
@@ -346,43 +360,44 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
         curve_str = json_object_get_string(groupobj, "curve");
         if (!curve_str) {
             ACVP_LOG_ERR("Server JSON missing 'curve'");
-            return ACVP_MISSING_ARG;
+            rv = ACVP_MISSING_ARG;
+            goto err;
         }
 
         curve = acvp_lookup_ec_curve(alg_id, curve_str);
         if (!curve) {
             ACVP_LOG_ERR("Server JSON includes unrecognized curve");
-            return ACVP_INVALID_ARG;
+            rv = ACVP_INVALID_ARG;
+            goto err;
         }
 
         if (alg_id == ACVP_ECDSA_KEYGEN) {
             secret_gen_mode_str = json_object_get_string(groupobj, "secretGenerationMode");
             if (!secret_gen_mode_str) {
                 ACVP_LOG_ERR("Server JSON missing 'secretGenerationMode'");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
-            if (strncmp(secret_gen_mode_str, ACVP_ECDSA_EXTRA_BITS_STR,
-                        strlen(ACVP_ECDSA_EXTRA_BITS_STR)) == 0) {
-                secret_gen_mode = ACVP_ECDSA_SECRET_GEN_EXTRA_BITS;
-            } else if (strncmp(secret_gen_mode_str, ACVP_ECDSA_TESTING_CANDIDATES_STR,
-                               strlen(ACVP_ECDSA_TESTING_CANDIDATES_STR)) == 0) {
-                secret_gen_mode = ACVP_ECDSA_SECRET_GEN_TEST_CAND;
-            } else {
+            secret_gen_mode = read_secret_gen_mode(secret_gen_mode_str);
+            if (!secret_gen_mode) {
                 ACVP_LOG_ERR("Server JSON invalid 'secretGenerationMode'");
-                return ACVP_INVALID_ARG;
+                rv = ACVP_INVALID_ARG;
+                goto err;
             }
         } else if (alg_id == ACVP_ECDSA_SIGGEN || alg_id == ACVP_ECDSA_SIGVER) {
             hash_alg_str = json_object_get_string(groupobj, "hashAlg");
             if (!hash_alg_str) {
                 ACVP_LOG_ERR("Server JSON missing 'hashAlg'");
-                return ACVP_MISSING_ARG;
+                rv = ACVP_MISSING_ARG;
+                goto err;
             }
 
             hash_alg = acvp_lookup_hash_alg(hash_alg_str);
             if (!hash_alg || (alg_id == ACVP_ECDSA_SIGGEN && hash_alg == ACVP_SHA1)) {
                 ACVP_LOG_ERR("Server JSON invalid 'hashAlg'");
-                return ACVP_INVALID_ARG;
+                rv = ACVP_INVALID_ARG;
+                goto err;
             }
         }
 
@@ -405,23 +420,27 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
                 qy = (char *)json_object_get_string(testobj, "qy");
                 if (!qx || !qy) {
                     ACVP_LOG_ERR("Server JSON missing 'qx' or 'qy'");
-                    return ACVP_MISSING_ARG;
+                    rv = ACVP_MISSING_ARG;
+                    goto err;
                 }
-                if (strnlen(qx, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX ||
-                    strnlen(qy, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX) {
+                if (strnlen_s(qx, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX ||
+                    strnlen_s(qy, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX) {
                     ACVP_LOG_ERR("'qx' or 'qy' too long");
-                    return ACVP_INVALID_ARG;
+                    rv = ACVP_INVALID_ARG;
+                    goto err;
                 }
             }
             if (alg_id == ACVP_ECDSA_SIGGEN || alg_id == ACVP_ECDSA_SIGVER) {
                 message = (char *)json_object_get_string(testobj, "message");
                 if (!message) {
                     ACVP_LOG_ERR("Server JSON missing 'message'");
-                    return ACVP_MISSING_ARG;
+                    rv = ACVP_MISSING_ARG;
+                    goto err;
                 }
-                if (strnlen(message, ACVP_ECDSA_MSGLEN_MAX + 1) > ACVP_ECDSA_MSGLEN_MAX) {
+                if (strnlen_s(message, ACVP_ECDSA_MSGLEN_MAX + 1) > ACVP_ECDSA_MSGLEN_MAX) {
                     ACVP_LOG_ERR("message string too long");
-                    return ACVP_INVALID_ARG;
+                    rv = ACVP_INVALID_ARG;
+                    goto err;
                 }
             }
             if (alg_id == ACVP_ECDSA_SIGVER) {
@@ -429,12 +448,14 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
                 s = (char *)json_object_get_string(testobj, "s");
                 if (!r || !s) {
                     ACVP_LOG_ERR("Server JSON missing 'r' or 's'");
-                    return ACVP_MISSING_ARG;
+                    rv = ACVP_MISSING_ARG;
+                    goto err;
                 }
-                if (strnlen(r, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX ||
-                    strnlen(s, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX) {
+                if (strnlen_s(r, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX ||
+                    strnlen_s(s, ACVP_ECDSA_EXP_LEN_MAX + 1) > ACVP_ECDSA_EXP_LEN_MAX) {
                     ACVP_LOG_ERR("'r' or 's' too long");
-                    return ACVP_INVALID_ARG;
+                    rv = ACVP_INVALID_ARG;
+                    goto err;
                 }
             }
 
@@ -456,11 +477,11 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
                 if ((cap->crypto_handler)(&tc)) {
                     ACVP_LOG_ERR("ERROR: crypto module failed the operation");
                     rv = ACVP_CRYPTO_MODULE_FAIL;
-                    goto key_err;
+                    goto err;
                 }
             } else {
                 ACVP_LOG_ERR("Failed to initialize ECDSA test case");
-                goto key_err;
+                goto err;
             }
 
             /*
@@ -471,24 +492,24 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
                 rv = acvp_bin_to_hexstr(stc.qy, stc.qy_len, tmp, ACVP_ECDSA_EXP_LEN_MAX);
                 if (rv != ACVP_SUCCESS) {
                     ACVP_LOG_ERR("hex conversion failure (qy)");
-                    goto key_err;
+                    goto err;
                 }
                 json_object_set_string(r_gobj, "qy", (const char *)tmp);
-                memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+                memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
 
                 rv = acvp_bin_to_hexstr(stc.qx, stc.qx_len, tmp, ACVP_ECDSA_EXP_LEN_MAX);
                 if (rv != ACVP_SUCCESS) {
                     ACVP_LOG_ERR("hex conversion failure (qx)");
-                    goto key_err;
+                    goto err;
                 }
                 json_object_set_string(r_gobj, "qx", (const char *)tmp);
-                memset(tmp, 0x0, ACVP_ECDSA_EXP_LEN_MAX);
+                memzero_s(tmp, ACVP_ECDSA_EXP_LEN_MAX);
                 free(tmp);
             }
             rv = acvp_ecdsa_output_tc(ctx, alg_id, &stc, r_tobj);
             if (rv != ACVP_SUCCESS) {
                 ACVP_LOG_ERR("ERROR: JSON output failure in hash module");
-                goto key_err;
+                goto err;
             }
 
             /* Append the test response value to array */
@@ -497,24 +518,26 @@ static ACVP_RESULT acvp_ecdsa_kat_handler_internal(ACVP_CTX *ctx, JSON_Object *o
             /*
              * Release all the memory associated with the test case
              */
-key_err:
             acvp_ecdsa_release_tc(&stc);
-            if (rv != ACVP_SUCCESS) {
-                goto end;
-            }
         }
         json_array_append_value(r_garr, r_gval);
     }
 
-end:
     json_array_append_value(reg_arry, r_vs_val);
 
-    json_result = json_serialize_to_string_pretty(ctx->kat_resp);
+    json_result = json_serialize_to_string_pretty(ctx->kat_resp, NULL);
     if (ctx->debug == ACVP_LOG_LVL_VERBOSE) {
         printf("\n\n%s\n\n", json_result);
     } else {
         ACVP_LOG_INFO("\n\n%s\n\n", json_result);
     }
     json_free_serialized_string(json_result);
+    rv = ACVP_SUCCESS;
+
+err:
+    if (rv != ACVP_SUCCESS) {
+        acvp_ecdsa_release_tc(&stc);
+        acvp_release_json(r_vs_val, r_gval);
+    }
     return rv;
 }

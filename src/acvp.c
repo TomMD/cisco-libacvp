@@ -36,7 +36,7 @@
 #include "acvp.h"
 #include "acvp_lcl.h"
 #include "parson.h"
-
+#include "safe_lib.h"
 
 /*
  * Forward prototypes for local functions
@@ -164,14 +164,13 @@ ACVP_RESULT acvp_create_test_session(ACVP_CTX **ctx,
         return ACVP_INVALID_ARG;
     }
     if (*ctx) {
-        printf("Err: cannot initialize non-null ctx; clear ctx & set to NULL first\n");
+        printf("ERROR: Cannot initialize non-null ctx; clear ctx & set to NULL first\n");
         return ACVP_DUPLICATE_CTX;
     }
     *ctx = calloc(1, sizeof(ACVP_CTX));
     if (!*ctx) {
         return ACVP_MALLOC_FAIL;
     }
-    (*ctx)->path_segment = strdup(ACVP_PATH_SEGMENT_DEFAULT);
 
     if (progress_cb) {
         (*ctx)->test_progress_cb = progress_cb;
@@ -182,7 +181,7 @@ ACVP_RESULT acvp_create_test_session(ACVP_CTX **ctx,
     return ACVP_SUCCESS;
 }
 
-ACVP_RESULT acvp_set_2fa_callback(ACVP_CTX *ctx, ACVP_RESULT (*totp_cb)(char **token)) {
+ACVP_RESULT acvp_set_2fa_callback(ACVP_CTX *ctx, ACVP_RESULT (*totp_cb)(char **token, int token_max)) {
     if (totp_cb == NULL) {
         return ACVP_MISSING_ARG;
     }
@@ -282,6 +281,9 @@ static void acvp_cap_free_rsa_sig_list(ACVP_CAPS_LIST *cap_list) {
         ACVP_RSA_MODE_CAPS_LIST *mode_list = sig_cap->mode_capabilities;
         ACVP_RSA_MODE_CAPS_LIST *temp_mode_list;
 
+        if (sig_cap->fixed_pub_exp) {
+            free(sig_cap->fixed_pub_exp);
+        }
         while (mode_list) {
             acvp_cap_free_hash_pairs(mode_list->hash_pair);
 
@@ -615,6 +617,7 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
         if (ctx->cacerts_file) { free(ctx->cacerts_file); }
         if (ctx->tls_cert) { free(ctx->tls_cert); }
         if (ctx->tls_key) { free(ctx->tls_key); }
+        if (ctx->json_filename) { free(ctx->json_filename); }
         if (ctx->vs_list) {
             vs_entry = ctx->vs_list;
             while (vs_entry) {
@@ -692,18 +695,22 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
                 case ACVP_ECDSA_KEYGEN_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_keygen_cap->curves);
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_keygen_cap->secret_gen_modes);
+                    free(cap_entry->cap.ecdsa_keygen_cap);
                     break;
                 case ACVP_ECDSA_KEYVER_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_keyver_cap->curves);
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_keyver_cap->secret_gen_modes);
+                    free(cap_entry->cap.ecdsa_keyver_cap);
                     break;
                 case ACVP_ECDSA_SIGGEN_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_siggen_cap->curves);
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_siggen_cap->hash_algs);
+                    free(cap_entry->cap.ecdsa_siggen_cap);
                     break;
                 case ACVP_ECDSA_SIGVER_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_sigver_cap->curves);
                     acvp_cap_free_nl(cap_entry->cap.ecdsa_sigver_cap->hash_algs);
+                    free(cap_entry->cap.ecdsa_sigver_cap);
                     break;
                 case ACVP_KDF135_SRTP_TYPE:
                     acvp_cap_free_sl(cap_entry->cap.kdf135_srtp_cap->aes_keylens);
@@ -825,7 +832,15 @@ ACVP_RESULT acvp_set_json_filename(ACVP_CTX *ctx, const char *json_filename) {
         return ACVP_MISSING_ARG;
     }
     if (ctx->json_filename) { free(ctx->json_filename); }
-    ctx->json_filename = strdup(json_filename);
+
+    if (strnlen_s(json_filename, ACVP_JSON_FILENAME_MAX + 1) > ACVP_JSON_FILENAME_MAX) {
+        ACVP_LOG_ERR("Provided json_filename length > max(%d)", ACVP_JSON_FILENAME_MAX);
+        return ACVP_INVALID_ARG;
+    }
+
+    ctx->json_filename = calloc(ACVP_JSON_FILENAME_MAX + 1, sizeof(char));
+    strcpy_s(ctx->json_filename, ACVP_JSON_FILENAME_MAX, json_filename);
+
     ctx->use_json = 1;
 
     return ACVP_SUCCESS;
@@ -849,10 +864,10 @@ ACVP_RESULT acvp_set_vendor_info(ACVP_CTX *ctx,
         return ACVP_INVALID_ARG;
     }
 
-    if (strnlen(vendor_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(vendor_url, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(contact_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(contact_email, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(vendor_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(vendor_url, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(contact_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(contact_email, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("Vendor info string(s) too long");
         return ACVP_INVALID_ARG;
     }
@@ -862,10 +877,15 @@ ACVP_RESULT acvp_set_vendor_info(ACVP_CTX *ctx,
     if (ctx->contact_name) { free(ctx->contact_name); }
     if (ctx->contact_email) { free(ctx->contact_email); }
 
-    ctx->vendor_name = strndup(vendor_name, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->vendor_website = strndup(vendor_url, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->contact_name = strndup(contact_name, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->contact_email = strndup(contact_email, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->vendor_name = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->vendor_website = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->contact_name = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->contact_email = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+
+    strcpy_s(ctx->vendor_name, ACVP_SESSION_PARAMS_STR_LEN_MAX, vendor_name);
+    strcpy_s(ctx->vendor_website, ACVP_SESSION_PARAMS_STR_LEN_MAX, vendor_url);
+    strcpy_s(ctx->contact_name, ACVP_SESSION_PARAMS_STR_LEN_MAX, contact_name);
+    strcpy_s(ctx->contact_email, ACVP_SESSION_PARAMS_STR_LEN_MAX, contact_email);
 
     return ACVP_SUCCESS;
 }
@@ -889,10 +909,10 @@ ACVP_RESULT acvp_set_module_info(ACVP_CTX *ctx,
         return ACVP_INVALID_ARG;
     }
 
-    if (strnlen(module_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(module_type, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(module_version, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(module_description, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(module_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(module_type, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(module_version, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(module_description, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("Module info string(s) too long");
         return ACVP_INVALID_ARG;
     }
@@ -902,10 +922,15 @@ ACVP_RESULT acvp_set_module_info(ACVP_CTX *ctx,
     if (ctx->module_version) { free(ctx->module_version); }
     if (ctx->module_desc) { free(ctx->module_desc); }
 
-    ctx->module_name = strndup(module_name, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->module_type = strndup(module_type, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->module_version = strndup(module_version, ACVP_SESSION_PARAMS_STR_LEN_MAX);
-    ctx->module_desc = strndup(module_description, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->module_name = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->module_type = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->module_version = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    ctx->module_desc = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+
+    strcpy_s(ctx->module_name, ACVP_SESSION_PARAMS_STR_LEN_MAX, module_name);
+    strcpy_s(ctx->module_type, ACVP_SESSION_PARAMS_STR_LEN_MAX, module_type);
+    strcpy_s(ctx->module_version, ACVP_SESSION_PARAMS_STR_LEN_MAX, module_version);
+    strcpy_s(ctx->module_desc, ACVP_SESSION_PARAMS_STR_LEN_MAX, module_description);
 
     return ACVP_SUCCESS;
 }
@@ -928,13 +953,14 @@ ACVP_RESULT acvp_add_oe_dependency(ACVP_CTX *ctx,
         return ACVP_INVALID_ARG;
     }
 
-    if (strnlen(oe_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(oe_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("oe info string(s) too long");
         return ACVP_INVALID_ARG;
     }
 
     if (ctx->oe_name) free(ctx->oe_name);
-    ctx->oe_name = strndup(oe_name, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->oe_name = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->oe_name, ACVP_SESSION_PARAMS_STR_LEN_MAX, oe_name);
 
     if (!ctx->dependency_list) {
         ctx->dependency_list = calloc(1, sizeof(ACVP_DEPENDENCY_LIST));
@@ -974,14 +1000,16 @@ ACVP_RESULT acvp_set_server(ACVP_CTX *ctx, char *server_name, int port) {
     if (!server_name || port < 1) {
         return ACVP_INVALID_ARG;
     }
-    if (strnlen(server_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(server_name, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("Server name string(s) too long");
         return ACVP_INVALID_ARG;
     }
     if (ctx->server_name) {
         free(ctx->server_name);
     }
-    ctx->server_name = strndup(server_name, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->server_name = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->server_name, ACVP_SESSION_PARAMS_STR_LEN_MAX, server_name);
+
     ctx->server_port = port;
 
     return ACVP_SUCCESS;
@@ -998,12 +1026,13 @@ ACVP_RESULT acvp_set_path_segment(ACVP_CTX *ctx, char *path_segment) {
     if (!path_segment) {
         return ACVP_INVALID_ARG;
     }
-    if (strnlen(path_segment, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(path_segment, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("Path segment string(s) too long");
         return ACVP_INVALID_ARG;
     }
     if (ctx->path_segment) { free(ctx->path_segment); }
-    ctx->path_segment = strndup(path_segment, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->path_segment = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->path_segment, ACVP_SESSION_PARAMS_STR_LEN_MAX, path_segment);
 
     return ACVP_SUCCESS;
 }
@@ -1019,12 +1048,13 @@ ACVP_RESULT acvp_set_api_context(ACVP_CTX *ctx, char *api_context) {
     if (!api_context) {
         return ACVP_INVALID_ARG;
     }
-    if (strnlen(api_context, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(api_context, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("API context string(s) too long");
         return ACVP_INVALID_ARG;
     }
     if (ctx->api_context) { free(ctx->api_context); }
-    ctx->api_context = strndup(api_context, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->api_context = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->api_context, ACVP_SESSION_PARAMS_STR_LEN_MAX, api_context);
 
     return ACVP_SUCCESS;
 }
@@ -1046,13 +1076,14 @@ ACVP_RESULT acvp_set_cacerts(ACVP_CTX *ctx, char *ca_file) {
         return ACVP_MISSING_ARG;
     }
 
-    if (strnlen(ca_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(ca_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("CA filename is suspiciously long...");
         return ACVP_INVALID_ARG;
     }
 
     if (ctx->cacerts_file) { free(ctx->cacerts_file); }
-    ctx->cacerts_file = strndup(ca_file, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->cacerts_file = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->cacerts_file, ACVP_SESSION_PARAMS_STR_LEN_MAX, ca_file);
 
     /*
      * Enable peer verification when CA certs are provided.
@@ -1078,15 +1109,18 @@ ACVP_RESULT acvp_set_certkey(ACVP_CTX *ctx, char *cert_file, char *key_file) {
     if (!cert_file || !key_file) {
         return ACVP_MISSING_ARG;
     }
-    if (strnlen(cert_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
-        strnlen(key_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
+    if (strnlen_s(cert_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX ||
+        strnlen_s(key_file, ACVP_SESSION_PARAMS_STR_LEN_MAX + 1) > ACVP_SESSION_PARAMS_STR_LEN_MAX) {
         ACVP_LOG_ERR("CA filename is suspiciously long...");
         return ACVP_INVALID_ARG;
     }
     if (ctx->tls_cert) { free(ctx->tls_cert); }
-    ctx->tls_cert = strndup(cert_file, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->tls_cert = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->tls_cert, ACVP_SESSION_PARAMS_STR_LEN_MAX, cert_file);
+
     if (ctx->tls_key) { free(ctx->tls_key); }
-    ctx->tls_key = strndup(key_file, ACVP_SESSION_PARAMS_STR_LEN_MAX);
+    ctx->tls_key = calloc(ACVP_SESSION_PARAMS_STR_LEN_MAX + 1, sizeof(char));
+    strcpy_s(ctx->tls_key, ACVP_SESSION_PARAMS_STR_LEN_MAX, key_file);
 
     return ACVP_SUCCESS;
 }
@@ -1105,7 +1139,7 @@ ACVP_RESULT acvp_mark_as_sample(ACVP_CTX *ctx) {
  * second of the two-factor authentications using
  * a TOTP.
  */
-static ACVP_RESULT acvp_build_login(ACVP_CTX *ctx, char **login, int refresh) {
+static ACVP_RESULT acvp_build_login(ACVP_CTX *ctx, char **login, int *login_len, int refresh) {
     ACVP_RESULT rv = ACVP_SUCCESS;
     JSON_Value *reg_arry_val = NULL;
     JSON_Value *ver_val = NULL;
@@ -1113,11 +1147,10 @@ static ACVP_RESULT acvp_build_login(ACVP_CTX *ctx, char **login, int refresh) {
     JSON_Value *pw_val = NULL;
     JSON_Object *pw_obj = NULL;
     JSON_Array *reg_arry = NULL;
-    char *token = malloc(ACVP_TOTP_TOKEN_MAX);
+    char *token = calloc(ACVP_TOTP_TOKEN_MAX, sizeof(char));
 
     if (!token) return ACVP_MALLOC_FAIL;
-
-    memset(token, 0, ACVP_TOTP_TOKEN_MAX);
+    if (!login_len) return ACVP_INVALID_ARG;
 
     /*
      * Start the login array
@@ -1134,11 +1167,12 @@ static ACVP_RESULT acvp_build_login(ACVP_CTX *ctx, char **login, int refresh) {
     pw_val = json_value_init_object();
     pw_obj = json_value_get_object(pw_val);
 
-    ctx->totp_cb(&token);
-    if (strnlen(token, ACVP_TOTP_TOKEN_MAX + 1) > ACVP_TOTP_TOKEN_MAX) {
+    ctx->totp_cb(&token, ACVP_TOTP_TOKEN_MAX);
+    if (strnlen_s(token, ACVP_TOTP_TOKEN_MAX + 1) > ACVP_TOTP_TOKEN_MAX) {
         ACVP_LOG_ERR("totp cb generated a token that is too long");
+        json_value_free(pw_val);
         rv = ACVP_INVALID_ARG;
-        goto end;
+        goto err;
     }
 
     json_object_set_string(pw_obj, "password", token);
@@ -1148,8 +1182,8 @@ static ACVP_RESULT acvp_build_login(ACVP_CTX *ctx, char **login, int refresh) {
     }
     json_array_append_value(reg_arry, pw_val);
 
-end:
-    *login = json_serialize_to_string_pretty(reg_arry_val);
+err:
+    *login = json_serialize_to_string_pretty(reg_arry_val, login_len);
     free(token);
     json_value_free(reg_arry_val);
     return rv;
@@ -1169,6 +1203,7 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
     ACVP_DEPENDENCY_LIST *current_dep;
 #endif
     char *login = NULL;
+    int login_len = 0, reg_len = 0;
     JSON_Value *tmp_json_from_file;
 
     if (!ctx) {
@@ -1179,7 +1214,7 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
      * Construct the login message
      */
     if (ctx->totp_cb) {
-        rv = acvp_build_login(ctx, &login, 0);
+        rv = acvp_build_login(ctx, &login, &login_len, 0);
         if (rv != ACVP_SUCCESS) {
             ACVP_LOG_ERR("Unable to build login message");
             goto end;
@@ -1194,7 +1229,7 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
         /*
          * Send the login to the ACVP server and get the response,
          */
-        rv = acvp_send_login(ctx, login);
+        rv = acvp_send_login(ctx, login, login_len);
         if (rv == ACVP_SUCCESS) {
             ACVP_LOG_STATUS("200 OK %s", ctx->reg_buf);
             rv = acvp_parse_login(ctx);
@@ -1291,12 +1326,12 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
          * Send the capabilities to the ACVP server and get the response,
          * which should be a list of vector set ID urls
          */
-        rv = acvp_build_test_session(ctx, &reg);
+        rv = acvp_build_test_session(ctx, &reg, &reg_len);
         if (rv != ACVP_SUCCESS) {
             ACVP_LOG_ERR("Unable to build register message");
             goto end;
         }
-        rv = acvp_send_test_session_registration(ctx, reg);
+        rv = acvp_send_test_session_registration(ctx, reg, reg_len);
         ACVP_LOG_STATUS("Sending registration: %s", ctx->reg_buf);
         if (rv == ACVP_SUCCESS) {
             ACVP_LOG_STATUS("200 OK");
@@ -1310,7 +1345,7 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
         }
     } else {
         tmp_json_from_file = json_parse_file(ctx->json_filename);
-        reg = json_serialize_to_string_pretty(tmp_json_from_file);
+        reg = json_serialize_to_string_pretty(tmp_json_from_file, NULL);
         json_value_free(tmp_json_from_file);
     }
 
@@ -1403,14 +1438,13 @@ static ACVP_RESULT acvp_parse_login(ACVP_CTX *ctx) {
     JSON_Value *val;
     JSON_Object *obj = NULL;
     char *json_buf = ctx->reg_buf;
-    int i;
     const char *jwt;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1429,15 +1463,15 @@ static ACVP_RESULT acvp_parse_login(ACVP_CTX *ctx) {
         rv = ACVP_NO_TOKEN;
         goto end;
     } else {
-        i = strnlen(jwt, ACVP_JWT_TOKEN_MAX + 1);
-        if (i > ACVP_JWT_TOKEN_MAX) {
+        if (strnlen_s(jwt, ACVP_JWT_TOKEN_MAX + 1) > ACVP_JWT_TOKEN_MAX) {
             ACVP_LOG_ERR("access_token too large");
             rv = ACVP_NO_TOKEN;
             goto end;
         }
-        ctx->jwt_token = calloc(1, i + 1);
-        strncpy(ctx->jwt_token, jwt, i);
-        ctx->jwt_token[i] = 0;
+
+        ctx->jwt_token = calloc(ACVP_JWT_TOKEN_MAX + 1, sizeof(char));
+        strcpy_s(ctx->jwt_token, ACVP_JWT_TOKEN_MAX, jwt);
+
         ACVP_LOG_STATUS("JWT: %s", ctx->jwt_token);
     }
 end:
@@ -1454,14 +1488,13 @@ static ACVP_RESULT acvp_parse_vendors(ACVP_CTX *ctx) {
     JSON_Value *val;
     JSON_Object *obj = NULL;
     char *json_buf = ctx->reg_buf;
-    int i = 0;
     const char *vendor_url;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1474,15 +1507,15 @@ static ACVP_RESULT acvp_parse_vendors(ACVP_CTX *ctx) {
         rv = ACVP_NO_TOKEN;
         goto end;
     } else {
-        i = strnlen(vendor_url, ACVP_ATTR_URL_MAX + 1);
-        if (i > ACVP_ATTR_URL_MAX) {
+        if (strnlen_s(vendor_url, ACVP_ATTR_URL_MAX + 1) > ACVP_ATTR_URL_MAX) {
             ACVP_LOG_ERR("vendor url too large");
             rv = ACVP_NO_TOKEN;
             goto end;
         }
-        ctx->vendor_url = calloc(1, i + 1);
-        strncpy(ctx->vendor_url, vendor_url, i);
-        ctx->vendor_url[i] = 0;
+
+        ctx->vendor_url = calloc(ACVP_ATTR_URL_MAX, sizeof(char));
+        strcpy_s(ctx->vendor_url, ACVP_ATTR_URL_MAX, vendor_url);
+
         ACVP_LOG_STATUS("Vendor URL: %s", ctx->vendor_url);
     }
 end:
@@ -1499,14 +1532,13 @@ static ACVP_RESULT acvp_parse_oes(ACVP_CTX *ctx) {
     JSON_Value *val;
     JSON_Object *obj = NULL;
     char *json_buf = ctx->reg_buf;
-    int i;
     const char *oe_url;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1519,15 +1551,15 @@ static ACVP_RESULT acvp_parse_oes(ACVP_CTX *ctx) {
         rv = ACVP_NO_TOKEN;
         goto end;
     } else {
-        i = strnlen(oe_url, ACVP_ATTR_URL_MAX + 1);
-        if (i > ACVP_ATTR_URL_MAX) {
+        if (strnlen_s(oe_url, ACVP_ATTR_URL_MAX + 1) > ACVP_ATTR_URL_MAX) {
             ACVP_LOG_ERR("oe url too large");
             rv = ACVP_NO_TOKEN;
             goto end;
         }
-        ctx->oe_url = calloc(1, i + 1);
-        strncpy(ctx->oe_url, oe_url, i);
-        ctx->oe_url[i] = 0;
+
+        ctx->oe_url = calloc(ACVP_ATTR_URL_MAX + 1, sizeof(char));
+        strcpy_s(ctx->oe_url, ACVP_ATTR_URL_MAX, oe_url);
+
         ACVP_LOG_STATUS("OE URL: %s", ctx->oe_url);
     }
 end:
@@ -1544,14 +1576,13 @@ static ACVP_RESULT acvp_parse_modules(ACVP_CTX *ctx) {
     JSON_Value *val;
     JSON_Object *obj = NULL;
     char *json_buf = ctx->reg_buf;
-    int i;
     const char *module_url;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1564,15 +1595,15 @@ static ACVP_RESULT acvp_parse_modules(ACVP_CTX *ctx) {
         rv = ACVP_NO_TOKEN;
         goto end;
     } else {
-        i = strnlen(module_url, ACVP_ATTR_URL_MAX + 1);
-        if (i > ACVP_ATTR_URL_MAX) {
+        if (strnlen_s(module_url, ACVP_ATTR_URL_MAX + 1) > ACVP_ATTR_URL_MAX) {
             ACVP_LOG_ERR("module url too large");
             rv = ACVP_NO_TOKEN;
             goto end;
         }
-        ctx->module_url = calloc(1, i + 1);
-        strncpy(ctx->module_url, module_url, i);
-        ctx->module_url[i] = 0;
+
+        ctx->module_url = calloc(ACVP_ATTR_URL_MAX + 1, sizeof(char));
+        strcpy_s(ctx->module_url, ACVP_ATTR_URL_MAX, module_url);
+
         ACVP_LOG_STATUS("Module URL: %s", ctx->module_url);
     }
 end:
@@ -1589,14 +1620,13 @@ static ACVP_RESULT acvp_parse_dependencies(ACVP_CTX *ctx, ACVP_DEPENDENCY_LIST *
     JSON_Value *val;
     JSON_Object *obj = NULL;
     char *json_buf = ctx->reg_buf;
-    int i;
     const char *dep_url;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1609,13 +1639,15 @@ static ACVP_RESULT acvp_parse_dependencies(ACVP_CTX *ctx, ACVP_DEPENDENCY_LIST *
         rv = ACVP_MISSING_ARG;
         goto end;
     } else {
-        i = strnlen(dep_url, ACVP_ATTR_URL_MAX + 1);
-        if (i > ACVP_ATTR_URL_MAX) {
+        if (strnlen_s(dep_url, ACVP_ATTR_URL_MAX + 1) > ACVP_ATTR_URL_MAX) {
             ACVP_LOG_ERR("depedency url too large");
             rv = ACVP_INVALID_ARG;
             goto end;
         }
-        current_dep->url = strndup(dep_url, ACVP_ATTR_URL_MAX);
+
+        current_dep->url = calloc(ACVP_ATTR_URL_MAX + 1, sizeof(char));
+        strcpy_s(current_dep->url, ACVP_ATTR_URL_MAX, dep_url);
+
         ACVP_LOG_STATUS("dependency URL: %s", current_dep->url);
     }
 end:
@@ -1641,7 +1673,7 @@ static ACVP_RESULT acvp_parse_test_session_register(ACVP_CTX *ctx) {
     /*
      * Parse the JSON
      */
-    val = json_parse_string_with_comments(json_buf);
+    val = json_parse_string(json_buf);
     if (!val) {
         ACVP_LOG_ERR("JSON parse error");
         return ACVP_JSON_ERR;
@@ -1653,7 +1685,9 @@ static ACVP_RESULT acvp_parse_test_session_register(ACVP_CTX *ctx) {
      * processing later.
      */
     test_session_url = (char *)json_object_get_string(obj, "url");
-    ctx->session_url = strndup(test_session_url, ACVP_ATTR_URL_MAX);
+
+    ctx->session_url = calloc(ACVP_ATTR_URL_MAX + 1, sizeof(char));
+    strcpy_s(ctx->session_url, ACVP_ATTR_URL_MAX, test_session_url);
 
     vect_sets = json_object_get_array(obj, "vectorSetUrls");
     vs_cnt = json_array_get_count(vect_sets);
@@ -1745,6 +1779,7 @@ ACVP_RESULT acvp_check_test_results(ACVP_CTX *ctx) {
 
 ACVP_RESULT acvp_refresh(ACVP_CTX *ctx) {
     char *login = NULL;
+    int login_len = 0;
     ACVP_RESULT rv = ACVP_SUCCESS;
 
     if (!ctx) {
@@ -1752,7 +1787,7 @@ ACVP_RESULT acvp_refresh(ACVP_CTX *ctx) {
     }
 
     if (ctx->totp_cb) {
-        rv = acvp_build_login(ctx, &login, 1);
+        rv = acvp_build_login(ctx, &login, &login_len, 1);
         if (rv != ACVP_SUCCESS) {
             ACVP_LOG_ERR("Unable to build login message");
             goto end;
@@ -1767,7 +1802,7 @@ ACVP_RESULT acvp_refresh(ACVP_CTX *ctx) {
         /*
          * Send the login to the ACVP server and get the response,
          */
-        rv = acvp_send_login(ctx, login);
+        rv = acvp_send_login(ctx, login, login_len);
         if (rv == ACVP_SUCCESS) {
             ACVP_LOG_STATUS("200 OK %s", ctx->reg_buf);
             rv = acvp_parse_login(ctx);
@@ -1819,7 +1854,7 @@ static ACVP_RESULT acvp_process_vsid(ACVP_CTX *ctx, char *vsid_url) {
         } else {
             ACVP_LOG_STATUS("200 OK %s\n", ctx->kat_buf);
         }
-        val = json_parse_string_with_comments(json_buf);
+        val = json_parse_string(json_buf);
         if (!val) {
             ACVP_LOG_ERR("JSON parse error");
             rv = ACVP_JSON_ERR;
@@ -1875,6 +1910,7 @@ static ACVP_RESULT acvp_dispatch_vector_set(ACVP_CTX *ctx, JSON_Object *obj) {
     const char *alg = json_object_get_string(obj, "algorithm");
     const char *mode = json_object_get_string(obj, "mode");
     int vs_id = json_object_get_number(obj, "vsId");
+    int diff = 1;
 
     ctx->vs_id = vs_id;
     ACVP_RESULT rv;
@@ -1889,17 +1925,23 @@ static ACVP_RESULT acvp_dispatch_vector_set(ACVP_CTX *ctx, JSON_Object *obj) {
     ACVP_LOG_INFO("ACV version: %s", json_object_get_string(obj, "acvVersion"));
 
     for (i = 0; i < ACVP_ALG_MAX; i++) {
-        if (!strncmp(alg, alg_tbl[i].name, strlen(alg_tbl[i].name))) {
-            if (alg_tbl[i].mode != NULL) {
-                if (mode != NULL) {
-                    if (!strncmp(mode, alg_tbl[i].mode, strlen(alg_tbl[i].mode))) {
-                        rv = (alg_tbl[i].handler)(ctx, obj);
-                        return rv;
-                    }
-                }
-            } else {
+        strcmp_s(alg_tbl[i].name,
+                 strnlen_s(alg_tbl[i].name, ACVP_ALG_NAME_MAX),
+                 alg, &diff);
+        if (!diff) {
+            if (mode == NULL) {
                 rv = (alg_tbl[i].handler)(ctx, obj);
                 return rv;
+            }
+
+            if (alg_tbl[i].mode != NULL) {
+                strcmp_s(alg_tbl[i].mode,
+                        strnlen_s(alg_tbl[i].mode, ACVP_ALG_MODE_MAX),
+                        mode, &diff);
+                if (!diff) {
+                    rv = (alg_tbl[i].handler)(ctx, obj);
+                    return rv;
+                }
             }
         }
     }
@@ -1943,6 +1985,7 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
     int retry = 1, count = 0, i, passed;
     JSON_Array *results = NULL;
     JSON_Object *current = NULL;
+    int diff = 1;
 
     while (retry) {
         /*
@@ -1959,7 +2002,7 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
         } else {
             ACVP_LOG_ERR("%s", ctx->test_sess_buf);
         }
-        val = json_parse_string_with_comments(json_buf);
+        val = json_parse_string(json_buf);
         if (!val) {
             ACVP_LOG_ERR("JSON parse error");
             return ACVP_JSON_ERR;
@@ -1981,7 +2024,11 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
          */
         for (i = 0; i < count; i++) {
             current = json_array_get_object(results, i);
-            if (!strncmp(json_object_get_string(current, "status"), "incomplete", 10)) {
+
+            strcmp_s("incomplete", 10,
+                     json_object_get_string(current, "status"), &diff);
+
+            if (!diff) {
                 rv = acvp_retry_handler(ctx, 30);
                 if (ACVP_KAT_DOWNLOAD_RETRY == rv) {
                     retry = 1;
@@ -1996,7 +2043,10 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
             } else {
                 retry = 0;
                 if (ctx->debug >= ACVP_LOG_LVL_STATUS) {
-                    if (!strncmp(json_object_get_string(current, "status"), "fail", 4)) {
+                    strcmp_s("fail", 4,
+                             json_object_get_string(current, "status"), &diff);
+
+                    if (!diff) {
                         ACVP_LOG_STATUS("Getting more details on failed vector set...");
                         rv = acvp_retrieve_result(ctx, (char *)json_object_get_string(current, "vectorSetUrl"));
                         if (rv != ACVP_SUCCESS) {
