@@ -196,16 +196,16 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
         /*
          * Determine the encrypt key_len, inferred from cipher.
          */
-        if (!strncmp(lower_string(cipher_str), lower_string(ACVP_MODE_TDES), 4)) {
+        if (!strncmp(cipher_str, ACVP_MODE_TDES, 4)) {
             e_key_len = ACVP_KEY_LEN_TDES;
             iv_len = ACVP_BLOCK_LEN_TDES;
-        } else if (!strncmp(lower_string(cipher_str), lower_string(ACVP_MODE_AES_128), 7)) {
+        } else if (!strncmp(cipher_str, ACVP_MODE_AES_128, 7)) {
             e_key_len = ACVP_KEY_LEN_AES128;
             iv_len = ACVP_BLOCK_LEN_AES128;
-        } else if (!strncmp(lower_string(cipher_str), lower_string(ACVP_MODE_AES_192), 7)) {
+        } else if (!strncmp(cipher_str, ACVP_MODE_AES_192, 7)) {
             e_key_len = ACVP_KEY_LEN_AES192;
             iv_len = ACVP_BLOCK_LEN_AES192;
-        } else if (!strncmp(lower_string(cipher_str), lower_string(ACVP_MODE_AES_256), 7)) {
+        } else if (!strncmp(cipher_str, ACVP_MODE_AES_256, 7)) {
             e_key_len = ACVP_KEY_LEN_AES256;
             iv_len = ACVP_BLOCK_LEN_AES256;
         } else {
@@ -312,8 +312,7 @@ ACVP_RESULT acvp_kdf135_ssh_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
             }
 
             /* Process the current test vector... */
-            rv = (cap->crypto_handler)(&tc);
-            if (rv != ACVP_SUCCESS) {
+            if ((cap->crypto_handler)(&tc)) {
                 ACVP_LOG_ERR("crypto module failed the KDF SSH operation");
                 acvp_kdf135_ssh_release_tc(&stc);
                 return ACVP_CRYPTO_MODULE_FAIL;

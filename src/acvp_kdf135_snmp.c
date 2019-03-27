@@ -226,8 +226,7 @@ ACVP_RESULT acvp_kdf135_snmp_kat_handler(ACVP_CTX *ctx, JSON_Object *obj) {
             }
 
             /* Process the current test vector... */
-            rv = (cap->crypto_handler)(&tc);
-            if (rv != ACVP_SUCCESS) {
+            if ((cap->crypto_handler)(&tc)) {
                 ACVP_LOG_ERR("crypto module failed the operation");
                 acvp_kdf135_snmp_release_tc(&stc);
                 return ACVP_CRYPTO_MODULE_FAIL;
@@ -327,6 +326,7 @@ static ACVP_RESULT acvp_kdf135_snmp_init_tc(ACVP_CTX *ctx,
  */
 static ACVP_RESULT acvp_kdf135_snmp_release_tc(ACVP_KDF135_SNMP_TC *stc) {
     free(stc->s_key);
+    free(stc->engine_id);
     memset(stc, 0x0, sizeof(ACVP_KDF135_SNMP_TC));
     return ACVP_SUCCESS;
 }

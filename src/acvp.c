@@ -63,6 +63,8 @@ static void acvp_cap_free_sl(ACVP_SL_LIST *list);
 
 static void acvp_cap_free_nl(ACVP_NAME_LIST *list);
 
+static void acvp_cap_free_strl(ACVP_STRING_LIST *list);
+
 static void acvp_cap_free_hash_pairs(ACVP_RSA_HASH_PAIR_LIST *list);
 
 static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url);
@@ -209,7 +211,7 @@ static void acvp_cap_free_dsa_attrs(ACVP_CAPS_LIST *cap_entry) {
     ACVP_DSA_CAP_MODE *dsa_cap_mode = NULL;
     int i;
 
-    for (i = 0; i <= ACVP_DSA_MAX_MODES; i++) {
+    for (i = 0; i <= ACVP_DSA_MAX_MODES - 1; i++) {
         dsa_cap_mode = &cap_entry->cap.dsa_cap->dsa_cap_mode[i];
         if (dsa_cap_mode->defined) {
             next = dsa_cap_mode->dsa_attrs;
@@ -220,7 +222,7 @@ static void acvp_cap_free_dsa_attrs(ACVP_CAPS_LIST *cap_entry) {
             }
         }
     }
-    dsa_cap_mode = &cap_entry->cap.dsa_cap->dsa_cap_mode[0];
+    dsa_cap_mode = cap_entry->cap.dsa_cap->dsa_cap_mode;
     free(dsa_cap_mode);
 }
 
@@ -595,7 +597,6 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
         if (ctx->upld_buf) { free(ctx->upld_buf); }
         if (ctx->kat_resp) { json_value_free(ctx->kat_resp); }
         if (ctx->server_name) { free(ctx->server_name); }
-        if (ctx->vsid_url) { free(ctx->vsid_url); }
         if (ctx->vendor_url) { free(ctx->vendor_url); }
         if (ctx->module_url) { free(ctx->module_url); }
         if (ctx->oe_url) { free(ctx->oe_url); }
@@ -610,6 +611,7 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
         if (ctx->module_type) { free(ctx->module_type); }
         if (ctx->module_desc) { free(ctx->module_desc); }
         if (ctx->path_segment) { free(ctx->path_segment); }
+        if (ctx->api_context) { free(ctx->api_context); }
         if (ctx->cacerts_file) { free(ctx->cacerts_file); }
         if (ctx->tls_cert) { free(ctx->tls_cert); }
         if (ctx->tls_key) { free(ctx->tls_key); }
@@ -622,7 +624,7 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
             }
         }
         if (ctx->vsid_url_list) {
-            acvp_cap_free_nl(ctx->vsid_url_list);
+            acvp_cap_free_strl(ctx->vsid_url_list);
         }
         if (ctx->dependency_list) {
             dep_entry = ctx->dependency_list;
@@ -648,6 +650,7 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
                     acvp_cap_free_sl(cap_entry->cap.sym_cap->ivlen);
                     acvp_cap_free_sl(cap_entry->cap.sym_cap->aadlen);
                     acvp_cap_free_sl(cap_entry->cap.sym_cap->taglen);
+                    acvp_cap_free_sl(cap_entry->cap.sym_cap->tweak);
                     free(cap_entry->cap.sym_cap);
                     break;
                 case ACVP_HASH_TYPE:
@@ -657,7 +660,6 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
                     acvp_free_drbg_struct(cap_entry);
                     break;
                 case ACVP_HMAC_TYPE:
-                    acvp_cap_free_sl(cap_entry->cap.hmac_cap->mac_len);
                     free(cap_entry->cap.hmac_cap);
                     break;
                 case ACVP_CMAC_TYPE:
@@ -716,20 +718,25 @@ ACVP_RESULT acvp_free_test_session(ACVP_CTX *ctx) {
                 case ACVP_KDF135_SNMP_TYPE:
                     acvp_cap_free_sl(cap_entry->cap.kdf135_snmp_cap->pass_lens);
                     acvp_cap_free_nl(cap_entry->cap.kdf135_snmp_cap->eng_ids);
+                    free(cap_entry->cap.kdf135_snmp_cap);
                     break;
                 case ACVP_KDF135_SSH_TYPE:
+                    free(cap_entry->cap.kdf135_ssh_cap);
                     break;
                 case ACVP_KDF135_IKEV2_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.kdf135_ikev2_cap->hash_algs);
+                    free(cap_entry->cap.kdf135_ikev2_cap);
                     break;
                 case ACVP_KDF135_IKEV1_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.kdf135_ikev1_cap->hash_algs);
+                    free(cap_entry->cap.kdf135_ikev1_cap);
                     break;
                 case ACVP_KDF135_X963_TYPE:
                     acvp_cap_free_nl(cap_entry->cap.kdf135_x963_cap->hash_algs);
                     acvp_cap_free_sl(cap_entry->cap.kdf135_x963_cap->shared_info_lengths);
                     acvp_cap_free_sl(cap_entry->cap.kdf135_x963_cap->field_sizes);
                     acvp_cap_free_sl(cap_entry->cap.kdf135_x963_cap->key_data_lengths);
+                    free(cap_entry->cap.kdf135_x963_cap);
                     break;
                 case ACVP_KDF135_TPM_TYPE:
                 default:
@@ -773,6 +780,22 @@ static void acvp_cap_free_nl(ACVP_NAME_LIST *list) {
     while (top) {
         tmp = top;
         top = top->next;
+        free(tmp);
+    }
+}
+
+/*
+ * Simple utility function to free a string
+ * list from the capabilities structure.
+ */
+static void acvp_cap_free_strl(ACVP_STRING_LIST *list) {
+    ACVP_STRING_LIST *top = list;
+    ACVP_STRING_LIST *tmp;
+
+    while (top) {
+        tmp = top;
+        top = top->next;
+        free(tmp->string);
         free(tmp);
     }
 }
@@ -1140,10 +1163,13 @@ end:
  */
 ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
     ACVP_RESULT rv = ACVP_SUCCESS;
-    char *reg = NULL, *vendors = NULL, *modules = NULL, *oes = NULL, *dep = NULL;
+    char *reg = NULL;
+#if 0 // TODO these endpoints are NOT availble via API yet
+    char *vendors = NULL, *modules = NULL, *oes = NULL, *dep = NULL;
+    ACVP_DEPENDENCY_LIST *current_dep;
+#endif
     char *login = NULL;
     JSON_Value *tmp_json_from_file;
-    ACVP_DEPENDENCY_LIST *current_dep;
 
     if (!ctx) {
         return ACVP_NO_CTX;
@@ -1173,16 +1199,17 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
             ACVP_LOG_STATUS("200 OK %s", ctx->reg_buf);
             rv = acvp_parse_login(ctx);
         } else {
-            ACVP_LOG_STATUS("Login Response Failed %s", ctx->reg_buf);
+            ACVP_LOG_STATUS("Login Send Failed %s", ctx->reg_buf);
+            goto end;
         }
         if (rv != ACVP_SUCCESS) {
-            ACVP_LOG_STATUS("Login Send Failed");
+            ACVP_LOG_STATUS("Login Response Failed");
             goto end;
         }
     }
 
     if (ctx->use_json != 1) {
-#if 0 // TODO these endpoints are availble via API yet
+#if 0 // TODO these endpoints are NOT availble via API yet
         /*
          * Construct the registration message based on the capabilities
          * the user has enabled.
@@ -1294,12 +1321,14 @@ ACVP_RESULT acvp_register(ACVP_CTX *ctx) {
     }
 
 end:
+    if (login) free(login);
     if (reg) json_free_serialized_string(reg);
+#if 0 // TODO these endpoints are NOT availble via API yet
     if (vendors) json_free_serialized_string(vendors);
     if (modules) json_free_serialized_string(modules);
     if (oes) json_free_serialized_string(oes);
     if (dep) json_free_serialized_string(dep);
-
+#endif
     return rv;
 }
 
@@ -1308,13 +1337,13 @@ end:
  * that will need to be downloaded and processed later.
  */
 static ACVP_RESULT acvp_append_vsid_url(ACVP_CTX *ctx, char *vsid_url) {
-    ACVP_NAME_LIST *vs_entry, *vs_e2;
+    ACVP_STRING_LIST *vs_entry, *vs_e2;
 
-    vs_entry = calloc(1, sizeof(ACVP_NAME_LIST));
+    vs_entry = calloc(1, sizeof(ACVP_STRING_LIST));
     if (!vs_entry) {
         return ACVP_MALLOC_FAIL;
     }
-    vs_entry->name = strndup(vsid_url, ACVP_ATTR_URL_MAX);
+    vs_entry->string = strndup(vsid_url, ACVP_ATTR_URL_MAX);
 
     if (!ctx->vsid_url_list) {
         ctx->vsid_url_list = vs_entry;
@@ -1652,7 +1681,7 @@ end:
  */
 ACVP_RESULT acvp_process_tests(ACVP_CTX *ctx) {
     ACVP_RESULT rv = ACVP_SUCCESS;
-    ACVP_NAME_LIST *vs_entry = NULL;
+    ACVP_STRING_LIST *vs_entry = NULL;
 
     if (!ctx) {
         return ACVP_NO_CTX;
@@ -1668,7 +1697,7 @@ ACVP_RESULT acvp_process_tests(ACVP_CTX *ctx) {
         return ACVP_MISSING_ARG;
     }
     while (vs_entry) {
-        rv = acvp_process_vsid(ctx, vs_entry->name);
+        rv = acvp_process_vsid(ctx, vs_entry->string);
         vs_entry = vs_entry->next;
     }
 
@@ -1715,18 +1744,18 @@ ACVP_RESULT acvp_check_test_results(ACVP_CTX *ctx) {
 ***************************************************************************************************************/
 
 ACVP_RESULT acvp_refresh(ACVP_CTX *ctx) {
+    char *login = NULL;
+    ACVP_RESULT rv = ACVP_SUCCESS;
+
     if (!ctx) {
         return ACVP_NO_CTX;
     }
-
-    char *login = NULL;
-    ACVP_RESULT rv;
 
     if (ctx->totp_cb) {
         rv = acvp_build_login(ctx, &login, 1);
         if (rv != ACVP_SUCCESS) {
             ACVP_LOG_ERR("Unable to build login message");
-            return rv;
+            goto end;
         }
 
         if (ctx->debug >= ACVP_LOG_LVL_STATUS) {
@@ -1743,14 +1772,16 @@ ACVP_RESULT acvp_refresh(ACVP_CTX *ctx) {
             ACVP_LOG_STATUS("200 OK %s", ctx->reg_buf);
             rv = acvp_parse_login(ctx);
         } else {
-            ACVP_LOG_STATUS("Login Response Failed %s", ctx->reg_buf);
+            ACVP_LOG_STATUS("Login Send Failed %s", ctx->reg_buf);
+            goto end;
         }
         if (rv != ACVP_SUCCESS) {
-            ACVP_LOG_STATUS("Login Send Failed");
-            return rv;
+            ACVP_LOG_STATUS("Login Response Failed, %d", rv);
         }
     }
-    return ACVP_SUCCESS;
+end:
+    free(login);
+    return rv;
 }
 
 /*
@@ -1843,7 +1874,6 @@ static ACVP_RESULT acvp_dispatch_vector_set(ACVP_CTX *ctx, JSON_Object *obj) {
     int i;
     const char *alg = json_object_get_string(obj, "algorithm");
     const char *mode = json_object_get_string(obj, "mode");
-    const char *dir = json_object_get_string(obj, "direction");
     int vs_id = json_object_get_number(obj, "vsId");
 
     ctx->vs_id = vs_id;
@@ -1950,7 +1980,6 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
          * a failure or the disposition being incomplete
          */
         for (i = 0; i < count; i++) {
-            if (current) json_value_free((JSON_Value *)current);
             current = json_array_get_object(results, i);
             if (!strncmp(json_object_get_string(current, "status"), "incomplete", 10)) {
                 rv = acvp_retry_handler(ctx, 30);
@@ -1961,6 +1990,8 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
                 } else {
                     retry = 0;
                 }
+                if (val) json_value_free(val);
+                val = NULL;
                 break;
             } else {
                 retry = 0;
@@ -2000,6 +2031,7 @@ static ACVP_RESULT acvp_get_result_test_session(ACVP_CTX *ctx, char *session_url
     ACVP_LOG_STATUS("Received all dispositions for test session");
 
 end:
+    if (val) json_value_free(val);
     return rv;
 }
 

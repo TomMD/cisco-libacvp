@@ -325,22 +325,6 @@ ACVP_RESULT is_valid_rsa_mod(int value) {
     } else { return ACVP_SUCCESS; }
 }
 
-char *lower_string(const char *s) {
-    int c = 0;
-    int length = strnlen(s, ACVP_ATTR_URL_MAX); // arbitrary
-    char *lowered = calloc(length, sizeof(char));
-
-    while (s[c] != '\0') {
-        if (s[c] >= 'A' && s[c] <= 'Z') {
-            lowered[c] = (char)(s[c] + 32);
-        } else {
-            lowered[c] = s[c];
-        }
-        c++;
-    }
-    return lowered;
-}
-
 /*
  * Local table for matching ACVP_EC_CURVE to name string and vice versa.
  */
@@ -398,7 +382,7 @@ ACVP_EC_CURVE acvp_lookup_ec_curve(ACVP_CIPHER cipher, const char *name) {
     int i = 0;
 
     for (i = 0; i < ec_curve_tbl_length; i++) {
-        if (!strncmp(lower_string(name), lower_string(ec_curve_tbl[i].name),
+        if (!strncmp(name, ec_curve_tbl[i].name,
                      strlen(ec_curve_tbl[i].name))) {
             return ec_curve_tbl[i].id;
         }
@@ -407,7 +391,7 @@ ACVP_EC_CURVE acvp_lookup_ec_curve(ACVP_CIPHER cipher, const char *name) {
     if (cipher == ACVP_ECDSA_KEYVER || cipher == ACVP_ECDSA_SIGVER) {
         /* Check the deprecated curves */
         for (i = 0; i < ec_curve_depr_tbl_length; i++) {
-            if (!strncmp(lower_string(name), lower_string(ec_curve_depr_tbl[i].name),
+            if (!strncmp(name, ec_curve_depr_tbl[i].name,
                          strlen(ec_curve_depr_tbl[i].name))) {
                 return ec_curve_depr_tbl[i].id;
             }
@@ -692,22 +676,23 @@ void acvp_free_kv_list(ACVP_KV_LIST *kv_list) {
         kv_list = kv_list->next;
         if (tmp->key) free(tmp->key);
         if (tmp->value) free(tmp->value);
+        free(tmp);
     }
 }
 
-ACVP_RESULT acvp_setup_json_rsp_group (ACVP_CTX **ctx,
-                                       JSON_Value **outer_arr_val,
-                                       JSON_Value **r_vs_val,
-                                       JSON_Object **r_vs,
-                                       const char *alg_str,
-                                       JSON_Array **groups_arr) {
+ACVP_RESULT acvp_setup_json_rsp_group(ACVP_CTX **ctx,
+                                      JSON_Value **outer_arr_val,
+                                      JSON_Value **r_vs_val,
+                                      JSON_Object **r_vs,
+                                      const char *alg_str,
+                                      JSON_Array **groups_arr) {
     if ((*ctx)->kat_resp) {
         json_value_free((*ctx)->kat_resp);
     }
     (*ctx)->kat_resp = *outer_arr_val;
     *r_vs_val = json_value_init_object();
     *r_vs = json_value_get_object(*r_vs_val);
-    
+
     json_object_set_number(*r_vs, "vsId", (*ctx)->vs_id);
     json_object_set_string(*r_vs, "algorithm", alg_str);
     /*
@@ -715,6 +700,14 @@ ACVP_RESULT acvp_setup_json_rsp_group (ACVP_CTX **ctx,
      */
     json_object_set_value(*r_vs, "testGroups", json_value_init_array());
     (*groups_arr) = json_object_get_array(*r_vs, "testGroups");
-    
+
     return ACVP_SUCCESS;
 }
+
+void acvp_release_json(JSON_Value *r_vs_val,
+                       JSON_Value *r_gval) {
+
+    if (r_gval) json_value_free(r_gval);
+    if (r_vs_val) json_value_free(r_vs_val);
+}
+
